@@ -17,6 +17,14 @@ const decorate = (obj, spawn) => {
         }).then(proxify)
     }
 
+    obj.init = function(...args) {
+        return spawn.send({
+            "com": "new",
+            "var": obj.data,
+            "params": args
+        }).then(proxify)
+    }
+
     obj.close = function(){
         spawn.close();
     }
@@ -52,8 +60,28 @@ const wait_for = async (obj, path, spawn) => {
     return decorate(result, spawn)
 }
 
-const newProxy = (obj, spawn, path) => {
-    return new Proxy(obj, {
+const newProxy = (obj, spawn, path, clazz = false) => {
+    const mapCB = (...args) => args.map(arg => {
+        if (arg instanceof Function){
+            return spawn.callback(arg)
+        }
+        return arg
+    })
+
+    const fObj = async (...args) => {
+        args = mapCB(...args)
+        return await (await wait_for(obj, path, spawn)).call(...args)
+    }
+
+    class FObject extends Function{
+        constructor(...args) {
+            args = mapCB(...args)
+            return wait_for(obj, path, spawn).then(resp => resp.init(...args))
+        }
+    }
+    const fObject = clazz?FObject:fObj
+    Object.assign(fObject, obj)
+    return new Proxy(fObject, {
         get(target, name) {
             if (name == '__value__'){
                 return wait_for(obj, path, spawn).then(obj => obj.value)
@@ -62,15 +90,8 @@ const newProxy = (obj, spawn, path) => {
                 return wait_for(obj, path, spawn).then(obj => JSON.parse(obj.value))
             }
             if (name == '__call__'){
-                return async function(...args) {
-                    args = args.map(arg => {
-                        if (arg instanceof Function){
-                            return spawn.callback(arg)
-                        }
-                        return arg
-                    })
-                    return await (await wait_for(obj, path, spawn)).call(...args)
-                }
+                console.warn('WARN 1: this method is deprecate use simple call instead')
+                return fObject
             }
             if (name == '__subscribe__'){
                 return async function(name, cb) {
@@ -87,8 +108,10 @@ const newProxy = (obj, spawn, path) => {
                 }
                 
             }
-            const path_name = path?`${path}/${name.toString()}`: name
-            return newProxy(target, spawn, path_name)
+            if (name == 'then'){
+                return obj['then']
+            }console.log(name)
+            return newProxy(obj, spawn, path?`${path}/${name.toString()}`: name, name && name[0] && name[0] === name[0].toUpperCase())
         }
     })
 }
